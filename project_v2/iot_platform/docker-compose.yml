@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg14
+    container_name: iot_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: iot_backend
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - SECRET_KEY=${BACKEND_SECRET_KEY}
+      - LOG_LEVEL=${BACKEND_LOG_LEVEL}
+      - BLACKBOX_URL=http://blackbox:8001
+    ports:
+      - "${BACKEND_PORT}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  blackbox:
+    build: ./blackbox
+    container_name: iot_blackbox
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - FORECAST_STEPS=${BLACKBOX_FORECAST_STEPS:-10}
+      - MIN_TRAIN_POINTS=${BLACKBOX_MIN_TRAIN_POINTS:-20}
+      - ANOMALY_CONTAMINATION=${BLACKBOX_ANOMALY_CONTAMINATION:-0.05}
+    ports:
+      - "${BLACKBOX_PORT:-8001}:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./blackbox:/app
+      - blackbox_models:/tmp/iot_models
+
+  simulator:
+    build: ./simulator
+    container_name: iot_simulator
+    environment:
+      - BACKEND_URL=${BACKEND_URL}
+      - PORT=${SIMULATOR_PORT}
+    ports:
+      - "${SIMULATOR_PORT}:5001"
+    depends_on:
+      - backend
+    volumes:
+      - ./simulator:/app
+
+  frontend:
+    build: ./frontend
+    container_name: iot_frontend
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+  blackbox_models:
