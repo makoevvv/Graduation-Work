@@ -77,21 +77,23 @@ def push_log(level: str, message: str):
 # Генерация значений датчика
 # ─────────────────────────────────────────────
 
-def generate_sensor_value(sensor_type: str, base_value: float,
+def generate_sensor_value(base_value: float, min_val: float, max_val: float,
                            noise: bool, outliers: bool) -> float:
     """Генерирует значение датчика с шумом и выбросами."""
     value = base_value
-    type_cfg = SENSOR_TYPES[sensor_type]
-    range_ = type_cfg['max'] - type_cfg['min']
+    range_ = max_val - min_val
 
     if noise:
-        value += random.gauss(0, range_ * 0.05)
+        # Отступаем от границ, чтобы шум был симметричным
+        margin = range_ * 0.05
+        clamped_base = max(min_val + margin, min(max_val - margin, value))
+        value = clamped_base + random.gauss(0, range_ * 0.05)
 
     if outliers and random.random() < 0.05:
         value += random.choice([-1, 1]) * range_ * random.uniform(0.2, 0.5)
 
-    # Ограничиваем диапазоном
-    value = max(type_cfg['min'], min(type_cfg['max'], value))
+    # Ограничиваем пользовательским диапазоном
+    value = max(min_val, min(max_val, value))
     return round(value, 3)
 
 
@@ -108,24 +110,28 @@ def send_data_job(sensor_id: int):
         return
 
     sensor_type = sim['sensor_type']
+    sim_min = sim['min_value']
+    sim_max = sim['max_value']
+
     value = generate_sensor_value(
-        sensor_type,
         sim['current_base'],
+        sim_min,
+        sim_max,
         sim['noise'],
         sim['outliers'],
     )
 
-    # Обновляем базу для тренда
+    # Обновляем базу для тренда (циклический — разворот при достижении границ)
     if sim['trend'] == 'up':
-        sim['current_base'] = min(
-            SENSOR_TYPES[sensor_type]['max'],
-            sim['current_base'] + sim['trend_step']
-        )
+        sim['current_base'] += sim['trend_step']
+        if sim['current_base'] >= sim_max:
+            sim['current_base'] = sim_max
+            sim['trend'] = 'down'
     elif sim['trend'] == 'down':
-        sim['current_base'] = max(
-            SENSOR_TYPES[sensor_type]['min'],
-            sim['current_base'] - sim['trend_step']
-        )
+        sim['current_base'] -= sim['trend_step']
+        if sim['current_base'] <= sim_min:
+            sim['current_base'] = sim_min
+            sim['trend'] = 'up'
 
     # Отправляем в бэкенд
     payload = {
@@ -162,10 +168,13 @@ def get_simulations():
             'sensor_id': sid,
             'sensor_type': sim['sensor_type'],
             'interval': sim['interval'],
-            'trend': sim['trend'],
+            'trend': sim.get('initial_trend', sim['trend']),
+            'current_trend': sim['trend'],
             'noise': sim['noise'],
             'outliers': sim['outliers'],
             'current_value': round(sim['current_base'], 3),
+            'min_value': sim['min_value'],
+            'max_value': sim['max_value'],
             'unit': SENSOR_TYPES[sim['sensor_type']]['unit'],
         }
         for sid, sim in active_simulations.items()
@@ -195,7 +204,7 @@ def start_simulation():
     min_val = float(data.get('min_value', type_cfg['min']))
     max_val = float(data.get('max_value', type_cfg['max']))
     trend = data.get('trend', 'none')
-    noise = bool(data.get('noise', False))
+    noise = bool(data.get('noise', True))
     outliers = bool(data.get('outliers', False))
 
     # Останавливаем предыдущую симуляцию если есть
@@ -206,6 +215,7 @@ def start_simulation():
         'sensor_type': sensor_type,
         'interval': interval,
         'trend': trend,
+        'initial_trend': trend,  # сохраняем оригинальный тренд для UI
         'trend_step': (max_val - min_val) * 0.01,
         'noise': noise,
         'outliers': outliers,

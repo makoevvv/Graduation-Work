@@ -139,6 +139,60 @@ print_access_info() {
     echo ""
 }
 
+# Создание тестового пользователя
+create_test_user() {
+    print_info "Создание тестового пользователя..."
+    
+    local max_attempts=10
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        attempt=$((attempt + 1))
+        
+        # Проверка готовности backend API
+        if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+            # Попытка создания пользователя
+            local response=$(curl -s -X POST http://localhost:8000/api/v1/auth/register \
+                -H "Content-Type: application/json" \
+                -d '{"username": "testuser", "email": "test@test.ru", "password": "testpass123"}' \
+                2>&1)
+            
+            # Проверка успешности создания
+            if echo "$response" | grep -q "username\|email\|id"; then
+                print_success "Тестовый пользователь создан успешно!"
+                echo ""
+                print_info "Данные тестового пользователя:"
+                echo -e "  ${GREEN}Логин:${NC}       testuser"
+                echo -e "  ${GREEN}Email:${NC}       test@test.ru"
+                echo -e "  ${GREEN}Пароль:${NC}      testpass123"
+                echo ""
+                return 0
+            elif echo "$response" | grep -q "already exists\|уже зарегистрирован"; then
+                print_warning "Тестовый пользователь уже существует"
+                echo ""
+                print_info "Данные тестового пользователя:"
+                echo -e "  ${GREEN}Логин:${NC}       testuser"
+                echo -e "  ${GREEN}Email:${NC}       test@test.ru"
+                echo -e "  ${GREEN}Пароль:${NC}      testpass123"
+                echo ""
+                return 0
+            else
+                print_warning "Не удалось создать пользователя (попытка $attempt/$max_attempts)"
+                if [ $attempt -lt $max_attempts ]; then
+                    sleep 2
+                fi
+            fi
+        else
+            print_info "Ожидание готовности backend API... (попытка $attempt/$max_attempts)"
+            sleep 2
+        fi
+    done
+    
+    print_warning "Не удалось создать тестового пользователя. Вы можете создать его вручную через API или фронтенд."
+    echo ""
+    return 1
+}
+
 # Основная функция
 main() {
     echo ""
@@ -169,6 +223,9 @@ main() {
     
     # Вывод информации о доступе
     print_access_info
+    
+    # Создание тестового пользователя
+    create_test_user
 }
 
 # Обработка сигналов прерывания

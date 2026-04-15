@@ -112,6 +112,7 @@ async function loadSimulations() {
             </span>
           </div>
           <div class="sim-card-meta">
+            Диапазон: ${sim.min_value}…${sim.max_value} ${sim.unit} &nbsp;|&nbsp;
             Интервал: ${sim.interval}с &nbsp;|&nbsp;
             Тренд: ${trendLabel(sim.trend)} &nbsp;|&nbsp;
             ${sim.noise ? '🌊 шум' : ''} ${sim.outliers ? '⚡ выбросы' : ''}
