@@ -23,7 +23,7 @@
 ### Через Docker Compose (рекомендуется)
 ```bash
 cd project_v2/iot_platform
-docker compose up db
+docker compose up postgres
 ```
 
 ### Подключение напрямую
@@ -37,7 +37,7 @@ docker exec -it iot_postgres psql -U iot_user -d iot_db
 | Переменная | Значение по умолчанию |
 |-----------|----------------------|
 | `POSTGRES_USER` | `iot_user` |
-| `POSTGRES_PASSWORD` | `iot_password` |
+| `POSTGRES_PASSWORD` | `strong_password` |
 | `POSTGRES_DB` | `iot_db` |
 
 ---
@@ -334,7 +334,7 @@ healthcheck:
 ```yaml
 volumes:
   postgres_data:    # данные PostgreSQL/TimescaleDB
-  ml_models:        # модели scikit-learn (joblib)
+  blackbox_models:  # модели scikit-learn (joblib)
 ```
 
 ### Резервное копирование

@@ -1,19 +1,23 @@
 # Backend API — IoT Platform
 
-Основной бэкенд-сервис платформы. Реализован на **FastAPI** с асинхронным доступом к базе данных через **SQLAlchemy 2.0 + asyncpg**. Обеспечивает REST API для управления пользователями, датчиками, данными и ML-прогнозами. Включает механизм **авто-переобучения** ML-модели при накоплении новых данных.
+Основной бэкенд-сервис платформы. Реализован на **FastAPI** с асинхронным доступом к базе данных через **SQLAlchemy 2.0 + asyncpg**. Обеспечивает REST API для управления пользователями, предприятиями, устройствами, датчиками, данными и ML-прогнозами. Включает механизм **авто-переобучения** ML-модели при накоплении новых данных.
 
 ## Технологии
 
 | Компонент | Версия | Назначение |
 |-----------|--------|-----------|
-| FastAPI | 0.104 | Веб-фреймворк, OpenAPI-документация |
-| SQLAlchemy | 2.0 | Асинхронный ORM |
-| asyncpg | 0.29 | Асинхронный драйвер PostgreSQL |
-| Pydantic | v2 | Валидация данных, схемы |
-| python-jose | 3.3 | JWT-токены |
-| bcrypt | 4.0 | Хэширование паролей |
-| httpx | 0.25 | HTTP-клиент (async для API, sync для BackgroundTasks) |
-| uvicorn | 0.24 | ASGI-сервер |
+| FastAPI | 0.104.1 | Веб-фреймворк, OpenAPI-документация |
+| SQLAlchemy | 2.0.23 | Асинхронный ORM |
+| asyncpg | 0.29.0 | Асинхронный драйвер PostgreSQL |
+| Pydantic | v2 (2.5.0) | Валидация данных, схемы |
+| pydantic-settings | 2.1.0 | Управление конфигурацией |
+| python-jose | 3.3.0 | JWT-токены |
+| passlib + bcrypt | 1.7.4 / 4.0.1 | Хэширование паролей |
+| httpx | 0.25.2 | HTTP-клиент (async для API, sync для BackgroundTasks) |
+| loguru | 0.7.2 | Структурированное логирование |
+| uvicorn | 0.24.0 | ASGI-сервер |
+| alembic | 1.12.1 | Миграции БД |
+| email-validator | 2.1.0 | Валидация email |
 
 ## Структура проекта
 
@@ -27,8 +31,10 @@ backend/
 │   │       ├── api.py       # Регистрация всех роутеров
 │   │       └── endpoints/
 │   │           ├── auth.py        # /auth/register, /auth/login
-│   │           ├── sensors.py     # CRUD датчиков
+│   │           ├── enterprises.py # CRUD предприятий + управление доступом
+│   │           ├── devices.py     # CRUD устройств
 │   │           ├── groups.py      # CRUD групп датчиков
+│   │           ├── sensors.py     # CRUD датчиков
 │   │           ├── data.py        # Запись/чтение измерений + авто-переобучение
 │   │           └── predictions.py # Обучение ML, прогнозы, аномалии
 │   ├── core/
@@ -36,7 +42,7 @@ backend/
 │   │   ├── database.py      # Движок SQLAlchemy, сессии
 │   │   └── security.py      # JWT, хэширование паролей
 │   ├── models/
-│   │   └── models.py        # ORM-модели: User, Group, Sensor, SensorData, Prediction
+│   │   └── models.py        # ORM-модели: User, Enterprise, UserEnterpriseAccess, Device, Group, Sensor
 │   ├── schemas/
 │   │   └── schemas.py       # Pydantic-схемы запросов/ответов
 │   └── utils/
@@ -64,14 +70,20 @@ uvicorn app.main:app --reload --port 8000
 
 | Переменная | Пример | Описание |
 |-----------|--------|---------|
-| `DATABASE_URL` | `postgresql+asyncpg://user:pass@db:5432/iotdb` | Строка подключения к БД |
-| `SECRET_KEY` | `your-secret-key` | Ключ для подписи JWT |
-| `ALGORITHM` | `HS256` | Алгоритм JWT |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Время жизни токена |
+| `POSTGRES_USER` | `iot_user` | Пользователь PostgreSQL |
+| `POSTGRES_PASSWORD` | `strong_password` | Пароль PostgreSQL |
+| `POSTGRES_DB` | `iot_db` | Имя базы данных |
+| `POSTGRES_HOST` | `postgres` | Хост PostgreSQL |
+| `POSTGRES_PORT` | `5432` | Порт PostgreSQL |
+| `SECRET_KEY` | `super-secret-key` | Ключ для подписи JWT |
+| `ALGORITHM` | `HS256` | Алгоритм JWT (по умолчанию) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Время жизни токена (по умолчанию) |
 | `BLACKBOX_URL` | `http://blackbox:8001` | URL ML-сервиса |
 | `AUTO_RETRAIN_EVERY_N_POINTS` | `20` | Переобучать каждые N новых точек (0 = выкл) |
 | `AUTO_RETRAIN_MIN_POINTS` | `10` | Минимум точек для первого обучения |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
+
+> **Примечание:** `DATABASE_URL` строится автоматически из `POSTGRES_*` переменных в `config.py`.
 
 ## API Эндпоинты
 
@@ -98,11 +110,31 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 # Ответ: {"access_token": "eyJ...", "token_type": "bearer"}
 ```
 
+### Предприятия (`/api/v1/enterprises`)
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| `GET` | `/` | Список предприятий пользователя |
+| `POST` | `/` | Создать предприятие (автоматически роль `owner`) |
+| `GET` | `/{id}` | Получить предприятие по ID |
+| `PUT` | `/{id}` | Обновить предприятие |
+| `DELETE` | `/{id}` | Удалить предприятие |
+
+### Устройства (`/api/v1/devices`)
+
+| Метод | Путь | Описание |
+|-------|------|---------|
+| `GET` | `/` | Список устройств (фильтр по `enterprise_id`) |
+| `POST` | `/` | Создать устройство |
+| `GET` | `/{id}` | Получить устройство по ID |
+| `PUT` | `/{id}` | Обновить устройство |
+| `DELETE` | `/{id}` | Удалить устройство |
+
 ### Датчики (`/api/v1/sensors`)
 
 | Метод | Путь | Описание |
 |-------|------|---------|
-| `GET` | `/` | Список датчиков текущего пользователя |
+| `GET` | `/` | Список датчиков (фильтр по `group_id`, `device_id`) |
 | `POST` | `/` | Создать датчик |
 | `GET` | `/{id}` | Получить датчик по ID |
 | `PUT` | `/{id}` | Обновить датчик |
@@ -113,7 +145,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 curl -X POST http://localhost:8000/api/v1/sensors/ \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"name": "Температура_1", "sensor_type": "temperature", "unit": "°C"}'
+  -d '{"name": "Температура_1", "type": "temperature", "unit": "°C"}'
 ```
 
 ### Данные (`/api/v1/data`)
@@ -243,14 +275,12 @@ async with httpx.AsyncClient(timeout=60.0) as client:
 ### Модели данных
 
 ```python
-class User(Base):
-    id, username, email, hashed_password, is_active
-
-class Group(Base):
-    id, name, description, owner_id → User
-
-class Sensor(Base):
-    id, name, sensor_type, unit, description, is_active, group_id → Group, owner_id → User
+class User(Base):          # id, username, email, hashed_password, is_active, created_at
+class Enterprise(Base):    # id, name, description, address, owner_id → User, created_at
+class UserEnterpriseAccess(Base):  # id, user_id → User, enterprise_id → Enterprise, role, granted_at
+class Device(Base):        # id, name, description, model, serial_number, enterprise_id → Enterprise, is_active, created_at
+class Group(Base):         # id, name, description, user_id → User, device_id → Device, created_at
+class Sensor(Base):        # id, name, type, unit, user_id → User, group_id → Group, device_id → Device, is_active, created_at
 
 # Гипертаблица TimescaleDB (создаётся через raw SQL в lifespan)
 # sensor_data: time TIMESTAMPTZ, sensor_id INTEGER, value DOUBLE PRECISION

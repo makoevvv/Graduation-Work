@@ -15,23 +15,43 @@
 - 🚨 **Обнаруживать аномалии** в данных (Isolation Forest)
 - 🔄 **Авто-переобучать** ML-модель при накоплении новых данных (Concept Drift Detection)
 - 🌡️ **Симулировать** работу датчиков для тестирования
+- 🏭 **Управлять иерархией** объектов: Предприятие → Устройство → Группа → Датчик
 
 ## Архитектура
 
 ```
-┌─────────────┐     HTTP     ┌─────────────┐     SQL      ┌──────────────┐
-│  Симулятор  │ ──────────→  │  Backend    │ ──────────→  │ TimescaleDB  │
-│  Flask:5001 │              │  FastAPI    │              │ PostgreSQL   │
+┌─────────────┐     HTTP      ┌─────────────┐     SQL      ┌──────────────┐
+│  Симулятор   │ ──────────→  │  Backend    │ ──────────→  │ TimescaleDB  │
+│  Flask:5001  │              │  FastAPI    │              │ PostgreSQL   │
 └─────────────┘              │  :8000      │              │ :5432        │
-                             └──────┬──────┘              └──────────────┘
-                                    │ HTTP
-                                    ↓
-┌─────────────┐     HTTP      ┌─────────────┐
+                              └──────┬──────┘              └──────────────┘
+                                     │ HTTP (proxy)
+┌─────────────┐     HTTP      ┌──────┴──────┐
 │  Frontend   │ ──────────→  │  BlackBox   │
-│  React:3000 │              │  ML FastAPI │
+│  React:3000 │──→ Backend   │  ML FastAPI │
 └─────────────┘              │  :8001      │
-                             └─────────────┘
+                              └─────────────┘
 ```
+
+> **Примечание:** Frontend обращается **только к Backend** (порт 8000). Backend проксирует ML-запросы к BlackBox (обучение, прогнозы, аномалии). Прямого взаимодействия Frontend ↔ BlackBox нет.
+
+## Иерархия объектов
+
+Система поддерживает многоуровневую иерархию для организации IoT-инфраструктуры:
+
+```
+Enterprise (предприятие: завод, объект, здание)
+  └── Device (устройство/оборудование: насос, конвейер, HVAC)
+        ├── Group (логическая группа датчиков, опционально)
+        └── Sensor (датчик: температура, давление, вибрация)
+              ├── SensorData (гипертаблица измерений TimescaleDB)
+              └── Predictions (прогнозы ML-модели)
+```
+
+**Управление доступом:**
+- `User ←→ Enterprise` через таблицу `user_enterprise_access`
+- Роли: `owner` / `admin` / `viewer`
+- Один пользователь может иметь доступ к нескольким предприятиям с разными ролями
 
 ## Микросервисы
 
@@ -39,7 +59,7 @@
 |--------|-----------|------|--------|
 | **Backend API** | FastAPI + SQLAlchemy | 8000 | [backend/README.md](backend/README.md) |
 | **BlackBox ML** | FastAPI + scikit-learn | 8001 | [blackbox/README.md](blackbox/README.md) |
-| **Frontend** | React 18 + Recharts | 3000 | [frontend/README.md](frontend/README.md) |
+| **Frontend** | React 19 + Recharts 3 | 3000 | [frontend/README.md](frontend/README.md) |
 | **Simulator** | Flask + APScheduler | 5001 | [simulator/README.md](simulator/README.md) |
 | **Database** | TimescaleDB (PostgreSQL 14) | 5432 | [database/README.md](database/README.md) |
 
@@ -49,7 +69,38 @@
 - Docker 20.10+
 - Docker Compose v2
 
-### Запуск всей системы
+### Способ 1: Через скрипты (рекомендуется)
+
+```bash
+# 1. Перейти в директорию платформы
+cd project_v2/iot_platform
+
+# 2. Сделать скрипты исполняемыми (один раз)
+chmod +x scripts/*.sh
+
+# 3. Запустить все сервисы
+./scripts/start.sh
+# Скрипт автоматически:
+# - проверит наличие Docker и Docker Compose
+# - проверит наличие .env файла
+# - остановит старые контейнеры
+# - соберёт и запустит все сервисы
+# - дождётся готовности PostgreSQL
+# - выведет информацию о доступных сервисах
+```
+
+Другие скрипты:
+```bash
+# Остановка (с сохранением данных)
+./scripts/stop.sh
+
+# Полная очистка (удаление всех данных и volumes!)
+./scripts/clean.sh
+```
+
+Подробнее: [scripts/README.md](scripts/README.md)
+
+### Способ 2: Вручную через Docker Compose
 
 ```bash
 # 1. Перейти в директорию платформы
@@ -71,8 +122,8 @@ curl http://localhost:8000/health
 # {"status": "ok"}
 
 # BlackBox ML
-curl http://localhost:8001/
-# {"message": "BlackBox ML Service", "status": "ready"}
+curl http://localhost:8001/health
+# {"status": "ok", "service": "blackbox"}
 
 # Frontend
 open http://localhost:3000
@@ -84,6 +135,40 @@ open http://localhost:5001
 open http://localhost:8000/docs
 open http://localhost:8001/docs
 ```
+
+## API Endpoints
+
+### Backend API (`http://localhost:8000/api/v1`)
+
+| Группа | Метод | Endpoint | Описание |
+|--------|-------|----------|----------|
+| **Auth** | POST | `/auth/register` | Регистрация пользователя |
+| **Auth** | POST | `/auth/login` | Вход (получение JWT-токена) |
+| **Enterprises** | GET/POST | `/enterprises/` | Список / создание предприятий |
+| **Enterprises** | GET/PUT/DELETE | `/enterprises/{id}` | Операции с предприятием |
+| **Devices** | GET/POST | `/devices/` | Список / создание устройств |
+| **Devices** | GET/PUT/DELETE | `/devices/{id}` | Операции с устройством |
+| **Groups** | GET/POST | `/groups/` | Список / создание групп |
+| **Groups** | GET/PUT/DELETE | `/groups/{id}` | Операции с группой |
+| **Sensors** | GET/POST | `/sensors/` | Список / создание датчиков |
+| **Sensors** | GET/PUT/DELETE | `/sensors/{id}` | Операции с датчиком |
+| **Data** | POST | `/data/` | Запись измерений (+ триггер авто-переобучения) |
+| **Data** | GET | `/data/` | Получение данных датчика |
+| **Data** | GET | `/data/retrain-status` | Статус авто-переобучения |
+| **Predictions** | GET | `/predictions/` | Сохранённые прогнозы |
+| **Predictions** | POST | `/predictions/train` | Обучение ML-модели |
+| **Predictions** | GET | `/predictions/status` | Статус ML-модели |
+| **Predictions** | GET | `/predictions/anomalies` | Детекция аномалий |
+
+### BlackBox ML API (`http://localhost:8001`)
+
+| Метод | Endpoint | Описание |
+|-------|----------|----------|
+| POST | `/train?sensor_id=X` | Обучить модели на данных датчика |
+| GET | `/predict?sensor_id=X&steps=N` | Получить прогноз |
+| GET | `/anomalies?sensor_id=X` | Детектировать аномалии |
+| GET | `/status?sensor_id=X` | Статус обученной модели |
+| GET | `/health` | Проверка работоспособности |
 
 ## Тестовые данные
 
@@ -107,12 +192,12 @@ echo "Token: $TOKEN"
 curl -X POST http://localhost:8000/api/v1/sensors/ \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name": "Температура_1", "sensor_type": "temperature", "unit": "°C"}'
+  -d '{"name": "Температура_1", "type": "temperature", "unit": "°C"}'
 # Запомните id датчика из ответа (обычно 1)
 ```
 
 ### 3. Отправка данных через симулятор
-Открыть `http://localhost:5001`, ввести ID датчика и токен, нажать «Запустить».
+Открыть `http://localhost:5001`, ввести ID датчика, выбрать тип и параметры, нажать «Запустить».
 
 Или через API:
 ```bash
@@ -142,29 +227,42 @@ curl -X POST "http://localhost:8000/api/v1/predictions/train?sensor_id=1" \
 ## Конфигурация (`.env`)
 
 ```env
-# База данных
-POSTGRES_USER=iotuser
-POSTGRES_PASSWORD=iotpassword
-POSTGRES_DB=iotdb
-DATABASE_URL=postgresql+asyncpg://iotuser:iotpassword@db:5432/iotdb
+# PostgreSQL / TimescaleDB
+POSTGRES_USER=iot_user
+POSTGRES_PASSWORD=strong_password
+POSTGRES_DB=iot_db
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
 
-# Безопасность
-SECRET_KEY=your-super-secret-key-change-in-production
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
+# Backend
+BACKEND_SECRET_KEY=super-secret-key-change-in-production
+BACKEND_PORT=8000
+BACKEND_LOG_LEVEL=INFO
 
-# Сервисы
+# BlackBox (ML-сервис)
 BLACKBOX_URL=http://blackbox:8001
+BLACKBOX_PORT=8001
+BLACKBOX_FORECAST_STEPS=10          # шагов прогноза вперёд
+BLACKBOX_MIN_TRAIN_POINTS=20        # минимум точек для обучения
+BLACKBOX_ANOMALY_CONTAMINATION=0.05 # ожидаемая доля аномалий (5%)
+
+# Simulator
+SIMULATOR_PORT=5001
 BACKEND_URL=http://backend:8000
 
-# BlackBox ML
-BLACKBOX_DATABASE_URL=postgresql://iotuser:iotpassword@db:5432/iotdb
-BLACKBOX_MODELS_DIR=/app/models
-
-# Авто-переобучение
-AUTO_RETRAIN_EVERY_N_POINTS=20   # переобучать каждые 20 новых точек
-AUTO_RETRAIN_MIN_POINTS=10       # минимум точек для первого обучения
+# Frontend (для браузера — localhost)
+REACT_APP_BACKEND_URL=http://localhost:8000
 ```
+
+> **Примечание:** `DATABASE_URL` строится динамически в коде из `POSTGRES_*` переменных. Отдельно задавать его не нужно.
+
+### Параметры авто-переобучения (в коде backend)
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `AUTO_RETRAIN_EVERY_N_POINTS` | 20 | Переобучать каждые N новых точек |
+| `AUTO_RETRAIN_MIN_POINTS` | 10 | Минимум точек для первого обучения |
+| `TRAIN_WINDOW_POINTS` | 50 | Скользящее окно обучения (blackbox) |
 
 ## Структура проекта
 
@@ -179,21 +277,43 @@ iot_platform/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
+│       ├── main.py
+│       ├── api/v1/endpoints/  # auth, enterprises, devices, groups, sensors, data, predictions
+│       ├── core/              # config, database, security
+│       ├── models/            # SQLAlchemy ORM модели
+│       ├── schemas/           # Pydantic схемы
+│       └── utils/             # logging
 ├── blackbox/               # ML-микросервис
 │   ├── README.md
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
+│       ├── main.py
+│       ├── config.py
+│       ├── database.py
+│       ├── ml_engine.py    # LinearRegressionForecaster, IsolationForestDetector
+│       └── schemas.py
 ├── frontend/               # React SPA
 │   ├── README.md
 │   ├── Dockerfile
 │   ├── package.json
 │   └── src/
-├── simulator/              # Генератор данных
+│       ├── components/     # Layout, Navbar, PrivateRoute, SensorChart
+│       ├── context/        # AuthContext
+│       ├── pages/          # Dashboard, Devices, Enterprises, Groups, Login, Register, Sensors
+│       └── services/       # api.js
+├── simulator/              # Генератор данных с веб-интерфейсом
 │   ├── README.md
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── app.py
+│   ├── app.py
+│   ├── templates/          # index.html
+│   └── static/             # script.js, style.css
+├── scripts/                # Скрипты управления
+│   ├── README.md
+│   ├── start.sh            # Запуск всех сервисов
+│   ├── stop.sh             # Остановка (с сохранением данных)
+│   └── clean.sh            # Полная очистка (удаление данных)
 └── database/               # Документация БД
     └── README.md
 ```
@@ -202,48 +322,53 @@ iot_platform/
 
 ### Backend
 - **Python 3.11** — язык программирования
-- **FastAPI 0.104** — асинхронный веб-фреймворк
-- **SQLAlchemy 2.0** — ORM с поддержкой async/await
-- **asyncpg** — асинхронный драйвер PostgreSQL
-- **Pydantic v2** — валидация данных
+- **FastAPI 0.104.1** — асинхронный веб-фреймворк
+- **SQLAlchemy 2.0.23** — ORM с поддержкой async/await
+- **asyncpg 0.29.0** — асинхронный драйвер PostgreSQL
+- **Pydantic v2 (2.5.0)** — валидация данных
+- **pydantic-settings 2.1.0** — управление конфигурацией
 - **python-jose** — JWT-токены
-- **bcrypt** — хэширование паролей
-- **httpx** — HTTP-клиент (async для API, sync для BackgroundTasks)
+- **passlib + bcrypt** — хэширование паролей
+- **httpx 0.25.2** — HTTP-клиент (async для API, sync для BackgroundTasks)
+- **loguru 0.7.2** — структурированное логирование
+- **alembic 1.12.1** — миграции БД
+- **email-validator 2.1.0** — валидация email
 
 ### ML / Data Science
-- **scikit-learn 1.3** — LinearRegression, IsolationForest
-- **numpy 1.26** — числовые вычисления
-- **pandas 2.1** — обработка данных
-- **joblib** — сериализация моделей
+- **scikit-learn 1.3.2** — LinearRegression, IsolationForest
+- **numpy 1.26.2** — числовые вычисления
+- **pandas 2.1.3** — обработка данных
+- **joblib 1.3.2** — сериализация моделей
 
 ### Frontend
-- **React 18** — UI-фреймворк
-- **React Router 6** — маршрутизация
-- **Recharts** — графики временных рядов
-- **Axios** — HTTP-запросы
-- **Bootstrap 5** — CSS-фреймворк
+- **React 19** — UI-фреймворк
+- **React Router 7** — маршрутизация
+- **Recharts 3** — графики временных рядов
+- **Axios 1.13** — HTTP-запросы
+- **Bootstrap 5.3** — CSS-фреймворк
 
 ### Infrastructure
 - **TimescaleDB** (PostgreSQL 14) — база данных временных рядов
 - **Docker Compose v2** — оркестрация контейнеров
-- **Flask + APScheduler** — симулятор данных
+- **Flask 2.3 + APScheduler 3.10** — симулятор данных с SSE
 
 ## ML-алгоритмы
 
 ### Linear Regression Forecaster
 Прогнозирует будущие значения временного ряда на основе инженерных признаков:
-- Lag-признаки (t-1, t-2, t-3)
-- Скользящее среднее и стандартное отклонение (окно 5)
-- Временной тренд
-- Временны́е признаки (час, минута)
+- `t` — порядковый номер точки (линейный тренд)
+- `t²` — квадратичный тренд
+- `ma5` — скользящее среднее за 5 точек
+- `ma10` — скользящее среднее за 10 точек
 
-Итеративный прогноз: каждый следующий шаг строится на основе предыдущих предсказаний.
+Итеративный прогноз: каждый следующий шаг строится на основе предыдущих предсказаний. Значения нормализуются через `StandardScaler` для стабильности обучения.
 
 ### Isolation Forest Detector
 Обнаруживает аномалии методом изоляционного леса:
 - `contamination=0.05` — ожидается 5% аномалий
-- Признаки: значение, скользящее среднее, отклонение
-- Возвращает `anomaly_score` (чем ближе к -1, тем аномальнее)
+- Признаки: значение, отклонение от скользящего среднего, z-score
+- `n_estimators=100` — количество деревьев в ансамбле
+- Возвращает `anomaly_score` (чем ниже score, тем аномальнее точка)
 
 ### Паттерн Strategy
 Базовый класс `BasePredictor` (ABC) позволяет добавлять новые алгоритмы (LSTM, Prophet, ARIMA) без изменения API.
@@ -258,7 +383,7 @@ iot_platform/
 ### Авто-переобучение (Concept Drift Detection)
 При изменении паттерна данных (concept drift) модель устаревает. Система автоматически переобучает модель:
 - Счётчик новых точек с момента последнего обучения хранится в памяти процесса
-- При накоплении `AUTO_RETRAIN_EVERY_N_POINTS` точек запускается фоновое переобучение
+- При накоплении `AUTO_RETRAIN_EVERY_N_POINTS` (20) точек запускается фоновое переобучение
 - Переобучение выполняется через `BackgroundTasks` FastAPI (threadpool) с синхронным `httpx.Client`
 - Каждое переобучение использует **скользящее окно** — только последние 50 точек
 - Dashboard отображает прогресс-бар и счётчик до следующего переобучения
@@ -267,10 +392,16 @@ iot_platform/
 ## Управление контейнерами
 
 ```bash
-# Запуск
+# Запуск (через скрипт — рекомендуется)
+./scripts/start.sh
+
+# Запуск (вручную)
 docker compose up -d
 
-# Остановка
+# Остановка (через скрипт)
+./scripts/stop.sh
+
+# Остановка (вручную)
 docker compose down
 
 # Просмотр логов
@@ -284,6 +415,8 @@ docker logs iot_backend 2>&1 | grep AutoRetrain
 docker compose restart backend
 
 # Полный сброс (включая данные!)
+./scripts/clean.sh
+# или вручную:
 docker compose down -v
 docker compose up --build
 
@@ -296,7 +429,7 @@ docker compose ps
 | Ограничение | Решение в будущем |
 |------------|------------------|
 | Нет MQTT-брокера | Добавить Mosquitto + paho-mqtt |
-| Только HTTP (нет WebSocket) | Заменить SSE на WebSocket |
+| Нет WebSocket для real-time обновлений | WebSocket в Backend (SSE уже реализован в симуляторе) |
 | Нет горизонтального масштабирования | Kubernetes + HPA |
 | Нет мобильного приложения | React Native |
 | Нет алертов | Интеграция с Telegram Bot API |
